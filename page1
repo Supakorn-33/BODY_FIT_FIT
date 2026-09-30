@@ -1,0 +1,89 @@
+"""Membership registration and BMI health-history page."""
+from datetime import date
+import math
+
+import storage
+
+TITLE = "สมัครสมาชิกและคำนวณ BMI"
+
+
+def build():
+    members = 0
+    bmi_records = 0
+    for item in storage.load():
+        if item.get("type") == "member":
+            members += 1
+        elif item.get("type") == "bmi":
+            bmi_records += 1
+    return {"member_count": members, "bmi_count": bmi_records}
+
+
+def read_number(text):
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    return value
+
+
+def handle(form):
+    items = storage.load()
+    action = form.get("action", "calculate")
+
+    if action == "register":
+        name = form.get("name", "").strip()
+        phone = "".join(character for character in form.get("phone", "") if character.isdigit())
+        age_text = form.get("age", "").strip()
+        gender = form.get("gender", "")
+        if name == "" or len(phone) < 9 or len(phone) > 15 or not age_text.isdigit() or gender not in ("หญิง", "ชาย", "ไม่ประสงค์ระบุ"):
+            return "กรุณากรอกชื่อ เบอร์โทร อายุ และเลือกเพศให้ครบ"
+        age = int(age_text)
+        if age < 18 or age > 120:
+            return "ระบบ BMI นี้สำหรับสมาชิกอายุ 18 ปีขึ้นไป"
+        for item in items:
+            if item.get("type") == "member" and item.get("phone") == phone:
+                return "เบอร์โทรนี้สมัครสมาชิกแล้ว"
+        items.append({"type": "member", "name": name, "phone": phone, "age": age, "gender": gender})
+        storage.save(items)
+        return "สมัครสมาชิกเรียบร้อยแล้ว สามารถใช้เบอร์โทรคำนวณ BMI ได้"
+
+    phone = "".join(character for character in form.get("phone", "") if character.isdigit())
+    member = None
+    for item in items:
+        if item.get("type") == "member" and item.get("phone") == phone:
+            member = item
+            break
+    if member is None:
+        return "ไม่พบสมาชิก กรุณาสมัครสมาชิกก่อนคำนวณ BMI"
+
+    weight = read_number(form.get("weight", ""))
+    height = read_number(form.get("height", ""))
+    if weight is None or height is None or weight < 25 or weight > 350 or height < 100 or height > 250:
+        return "กรุณากรอกน้ำหนัก 25–350 กก. และส่วนสูง 100–250 ซม. ให้ถูกต้อง"
+
+    bmi = weight / ((height / 100) ** 2)
+    if bmi < 18.5:
+        category = "น้ำหนักน้อยกว่าเกณฑ์"
+    elif bmi < 25:
+        category = "อยู่ในเกณฑ์ปกติ"
+    elif bmi < 30:
+        category = "น้ำหนักเกินเกณฑ์"
+    else:
+        category = "อ้วน"
+
+    items.append({
+        "type": "bmi",
+        "phone": phone,
+        "date": date.today().isoformat(),
+        "weight": weight,
+        "height": height,
+        "bmi": round(bmi, 1),
+        "category": category,
+        "conditions": form.get("conditions", "ไม่ระบุ"),
+        "medications": form.get("medications", "ไม่ระบุ"),
+        "activity": form.get("activity", "ไม่ระบุ"),
+    })
+    storage.save(items)
+    return "BMI ของคุณคือ " + format(bmi, ".1f") + " · " + category + " · บันทึกประวัติแล้ว"
