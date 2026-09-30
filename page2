@@ -1,0 +1,307 @@
+import json
+import math
+import urllib.parse
+import urllib.request
+from datetime import date
+
+import storage
+
+TITLE = "เครื่องคำนวณแคลอรีอาหาร"
+
+DEFAULT_FOODS = [
+    {"name": "Grilled chicken breast", "category": "Protein", "calories": 165, "aliases": "chicken ไก่ อกไก่"},
+    {"name": "Brown rice", "category": "Carbohydrate", "calories": 123, "aliases": "rice ข้าว ข้าวกล้อง"},
+    {"name": "Boiled egg", "category": "Protein", "calories": 155, "aliases": "egg ไข่ ไข่ต้ม"},
+    {"name": "Banana", "category": "Fruit", "calories": 89, "aliases": "banana กล้วย"},
+    {"name": "Greek yogurt", "category": "Dairy", "calories": 59, "aliases": "yogurt โยเกิร์ต"},
+    {"name": "Apple", "category": "Fruit", "calories": 52, "aliases": "apple แอปเปิล"},
+    {"name": "Salmon", "category": "Protein", "calories": 208, "aliases": "salmon ปลา แซลมอน"},
+    {"name": "White bread", "category": "Carbohydrate", "calories": 266, "aliases": "bread ขนมปัง"},
+    {"name": "Milk", "category": "Dairy", "calories": 61, "aliases": "milk นม"},
+    {"name": "Orange", "category": "Fruit", "calories": 47, "aliases": "orange ส้ม"},
+]
+
+THAI_TO_ENGLISH = {
+    "ไก่": "chicken", "อกไก่": "chicken", "ข้าว": "rice", "ข้าวกล้อง": "brown rice",
+    "ไข่": "egg", "ไข่ต้ม": "boiled egg", "กล้วย": "banana", "โยเกิร์ต": "yogurt",
+    "แอปเปิล": "apple", "ปลา": "fish", "แซลมอน": "salmon", "ขนมปัง": "bread",
+    "นม": "milk", "ส้ม": "orange", "ผัดไทย": "pad thai", "ต้มยำ": "tom yum",
+    "ต้มข่าไก่": "tom kha gai", "แกงเขียวหวาน": "green curry", "ส้มตำ": "som tam",
+    "กะเพรา": "thai basil chicken", "ผัดกะเพรา": "thai basil chicken", "ข้าวผัด": "thai fried rice",
+    "แกงมัสมั่น": "massaman curry", "หมูปิ้ง": "grilled pork", "ไก่ย่าง": "grilled chicken",
+}
+
+THAI_FOOD_SEARCHES = {
+    "อาหารไทย": "thai food",
+    "อาหาร": "thai food",
+    "กับข้าว": "thai dish",
+}
+
+
+def read_number(text, default):
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return default
+    if value != value or value < 0:
+        return default
+    return value
+
+
+def local_foods():
+    foods = []
+    for item in storage.load():
+        if "calories" in item and item.get("name"):
+            foods.append({
+                "name": item["name"],
+                "category": item.get("category", "Other"),
+                "calories": item["calories"],
+                "aliases": item.get("aliases", ""),
+            })
+    if len(foods) == 0:
+        foods = DEFAULT_FOODS[:]
+    return foods
+
+
+def translated_keyword(keyword):
+    english = keyword.lower()
+    for thai, translation in THAI_TO_ENGLISH.items():
+        if thai in english:
+            english = english.replace(thai, translation)
+    return english
+
+
+def search_local(keyword):
+    results = []
+    search_text = keyword.lower()
+    for item in local_foods():
+        text = item["name"].lower() + " " + item["category"].lower() + " " + item.get("aliases", "").lower()
+        if search_text == "" or search_text in text:
+            results.append(item)
+    return results
+
+
+def search_online(keyword, page_number):
+    values = {
+        "q": keyword,
+        "langs": "th,en",
+        "page_size": "50",
+        "page": str(page_number),
+        "fields": "code,product_name,brands",
+    }
+    address = "https://search.openfoodfacts.org/search?" + urllib.parse.urlencode(values)
+    request = urllib.request.Request(address, headers={
+        "User-Agent": "FoodPlannerStudentProject/1.0 (student food calorie app)",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(request, timeout=10) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    foods = []
+    for product in payload.get("hits", []):
+        name = product.get("product_name", "").strip()
+        brands = product.get("brands", [])
+        category = "Open Food Facts"
+        if len(brands) > 0:
+            category = brands[0]
+        if name != "" and product.get("code", "") != "":
+            foods.append({
+                "name": name,
+                "category": category,
+                "calories": None,
+                "code": product["code"],
+                "aliases": "",
+            })
+
+    total_pages = int(read_number(payload.get("page_count", 1), 1))
+    if total_pages < 1:
+        total_pages = 1
+    return foods, total_pages
+
+
+def online_food_calories(code):
+    values = {"fields": "product_name,brands,nutriments"}
+    address = "https://world.openfoodfacts.org/api/v2/product/" + urllib.parse.quote(code) + "?" + urllib.parse.urlencode(values)
+    request = urllib.request.Request(address, headers={
+        "User-Agent": "FoodPlannerStudentProject/1.0 (student food calorie app)",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(request, timeout=10) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    product = payload.get("product", {})
+    nutrients = product.get("nutriments", {})
+    calories = nutrients.get("energy-kcal_100g")
+    if calories is None:
+        calories = nutrients.get("energy-kcal_value")
+    calories = read_number(calories, -1)
+    estimated = False
+    if calories < 0:
+        nutrients = product.get("nutriments_estimated", {})
+        calories = nutrients.get("energy-kcal_100g")
+        if calories is None:
+            calories = nutrients.get("energy-kcal_value")
+        calories = read_number(calories, -1)
+        estimated = True
+    if calories < 0:
+        return None, False
+    return calories, estimated
+
+
+def find_foods(keyword, page_number):
+    translated = translated_keyword(keyword)
+    searches = [keyword]
+    online_failed = False
+    if keyword in THAI_FOOD_SEARCHES:
+        searches.append(THAI_FOOD_SEARCHES[keyword])
+    if translated != keyword:
+        searches.append(translated)
+
+    for search_text in searches:
+        try:
+            items, total_pages = search_online(search_text, page_number)
+            if len(items) > 0:
+                return items, total_pages, "ข้อมูลอาหารจาก Open Food Facts ออนไลน์"
+        except Exception:
+            online_failed = True
+
+    local_items = search_local(keyword)
+    if len(local_items) > 0:
+        if online_failed:
+            return local_items, 1, "ฐานข้อมูลออนไลน์ยังไม่พร้อม กำลังแสดงข้อมูลตัวอย่างในเครื่อง"
+        return local_items, 1, "ไม่พบในฐานข้อมูลออนไลน์ กำลังแสดงข้อมูลตัวอย่างในเครื่อง"
+    if online_failed:
+        return [], 1, "เชื่อมต่อฐานข้อมูลออนไลน์ไม่ได้ในขณะนี้ กรุณาลองใหม่ภายหลัง"
+    return [], 1, "ไม่พบอาหารนี้ในฐานข้อมูลออนไลน์ ลองใช้ชื่ออาหารภาษาไทยหรือภาษาอังกฤษ"
+
+
+def build(query):
+    members = [
+        {"name": item.get("name", "ไม่ทราบชื่อ"), "phone": item.get("phone", "")}
+        for item in storage.load()
+        if item.get("type") == "member" and item.get("phone")
+    ]
+    keyword = query.get("q", "").strip()
+    grams = read_number(query.get("grams", ""), 100)
+    tdee = read_number(query.get("tdee", ""), 2000)
+    goal = query.get("goal", "maintain")
+    calorie_adjustment = 0
+    goal_label = "คงน้ำหนัก"
+    if goal == "lose_500":
+        calorie_adjustment = -500
+        goal_label = "ลดน้ำหนัก 500 kcal/วัน"
+    elif goal == "lose_300":
+        calorie_adjustment = -300
+        goal_label = "ลดน้ำหนัก 300 kcal/วัน"
+    elif goal == "gain_200":
+        calorie_adjustment = 200
+        goal_label = "เพิ่มน้ำหนัก 200 kcal/วัน"
+    elif goal == "gain_300":
+        calorie_adjustment = 300
+        goal_label = "เพิ่มน้ำหนัก 300 kcal/วัน"
+    else:
+        goal = "maintain"
+    target_calories = max(0, tdee + calorie_adjustment)
+    selected_index = int(read_number(query.get("selected", ""), -1))
+    page = int(read_number(query.get("page", ""), 1))
+    if page < 1:
+        page = 1
+    notice = ""
+    total_pages = 1
+
+    if keyword == "":
+        items = []
+        notice = "กรุณาพิมพ์ชื่ออาหารเพื่อค้นหาจากฐานข้อมูลออนไลน์"
+    else:
+        items, total_pages, notice = find_foods(keyword, page)
+
+    selected = None
+    if selected_index >= 0 and selected_index < len(items):
+        selected = items[selected_index]
+        if "code" in selected:
+            try:
+                selected["calories"], selected["estimated"] = online_food_calories(selected["code"])
+            except Exception:
+                selected["calories"] = None
+                selected["estimated"] = False
+            if selected["calories"] is None:
+                notice = "พบอาหารแล้ว แต่ไม่มีข้อมูลแคลอรีออนไลน์ ลองเลือกรายการอื่น"
+
+    selected_calories = 0
+    for item in items:
+        item["calories_for_grams"] = None
+        if item["calories"] is not None:
+            item["calories_for_grams"] = item["calories"] * grams / 100
+    if selected is not None and selected["calories_for_grams"] is not None:
+        selected_calories = selected["calories_for_grams"]
+    selected_share = 0
+    if target_calories > 0:
+        selected_share = selected_calories * 100 / target_calories
+
+    return {
+        "keyword": keyword,
+        "members": members,
+        "grams": grams,
+        "tdee": tdee,
+        "goal": goal,
+        "goal_label": goal_label,
+        "calorie_adjustment": calorie_adjustment,
+        "target_calories": target_calories,
+        "items": items,
+        "selected": selected,
+        "selected_index": selected_index,
+        "total_calories": selected_calories,
+        "selected_share": selected_share,
+        "count": len(items),
+        "page_number": page,
+        "total_pages": total_pages,
+        "notice": notice,
+    }
+
+
+def handle(form):
+    if form.get("action") != "save_calorie":
+        return "ไม่พบคำสั่งบันทึกผลแคลอรี่"
+
+    items = storage.load()
+    phone = "".join(character for character in form.get("phone", "") if character.isdigit())
+    member = next((
+        item for item in items
+        if item.get("type") == "member" and item.get("phone") == phone
+    ), None)
+    if member is None:
+        return "กรุณาเลือกสมาชิกที่ลงทะเบียนแล้ว"
+
+    grams = read_number(form.get("grams", ""), -1)
+    calories_per_100g = read_number(form.get("calories_per_100g", ""), -1)
+    target_calories = read_number(form.get("target_calories", ""), -1)
+    if any(not math.isfinite(value) or value < 0 for value in (grams, calories_per_100g, target_calories)):
+        return "ข้อมูลแคลอรี่ไม่ถูกต้อง กรุณาเลือกอาหารและลองใหม่"
+
+    food_name = form.get("food_name", "").strip()
+    if food_name == "":
+        return "ไม่พบชื่ออาหาร กรุณาเลือกอาหารอีกครั้ง"
+
+    goal_labels = {
+        "lose_500": "ลดน้ำหนัก 500 kcal/วัน",
+        "lose_300": "ลดน้ำหนัก 300 kcal/วัน",
+        "maintain": "คงน้ำหนัก",
+        "gain_200": "เพิ่มน้ำหนัก 200 kcal/วัน",
+        "gain_300": "เพิ่มน้ำหนัก 300 kcal/วัน",
+    }
+    goal = form.get("goal", "maintain")
+    if goal not in goal_labels:
+        goal = "maintain"
+
+    items.append({
+        "type": "calorie",
+        "phone": phone,
+        "date": date.today().isoformat(),
+        "food": food_name,
+        "grams": grams,
+        "calories": round(calories_per_100g * grams / 100, 1),
+        "target_calories": target_calories,
+        "goal": goal,
+        "goal_label": goal_labels[goal],
+    })
+    storage.save(items)
+    return "บันทึกผลแคลอรี่ให้ " + member.get("name", "สมาชิก") + " แล้ว"
