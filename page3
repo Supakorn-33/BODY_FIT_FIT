@@ -1,0 +1,346 @@
+"""Summary of BMI calculations recorded on page 1."""
+from datetime import date
+import math
+
+import storage
+
+TITLE = "สรุปผล BMI"
+
+
+def daily_food_advice(category, age, gender, weight, height, activity):
+    guidance = {
+        "น้ำหนักน้อยกว่าเกณฑ์": {
+            "focus": "เพิ่มพลังงานและน้ำหนักอย่างค่อยเป็นค่อยไป",
+            "adjustment": (250, 300),
+            "foods": [
+                "รับประทานอาหารหลัก 3 มื้อ และเพิ่มอาหารว่างที่มีประโยชน์ 1–2 มื้อ",
+                "เพิ่มโปรตีนในแต่ละมื้อ เช่น ไข่ ปลา เต้าหู้ ถั่ว หรือนม",
+                "เลือกพลังงานจากอาหารคุณภาพ เช่น ธัญพืช ถั่ว อะโวคาโด และผลิตภัณฑ์นม",
+            ],
+        },
+        "อยู่ในเกณฑ์ปกติ": {
+            "focus": "รักษาสมดุลและคงน้ำหนักให้อยู่ในเกณฑ์",
+            "adjustment": (0, 0),
+            "foods": [
+                "จัดจานให้มีผักและผลไม้ประมาณครึ่งจาน",
+                "เลือกโปรตีนไม่ติดมันประมาณหนึ่งในสี่จาน และข้าวหรือธัญพืชไม่ขัดสีหนึ่งในสี่จาน",
+                "ดื่มน้ำให้เพียงพอ และจำกัดเครื่องดื่มหวานกับอาหารแปรรูป",
+            ],
+        },
+        "น้ำหนักเกินเกณฑ์": {
+            "focus": "ปรับพลังงานลงอย่างพอดีและค่อยเป็นค่อยไป",
+            "adjustment": (-400, -300),
+            "foods": [
+                "จัดจานให้มีผักประมาณครึ่งจาน โปรตีนไม่ติดมันหนึ่งในสี่ และข้าวไม่ขัดสีหนึ่งในสี่",
+                "เลือกอาหารต้ม นึ่ง ย่าง ลดของทอด เครื่องดื่มหวาน และขนมที่ให้พลังงานสูง",
+                "รับประทานเป็นเวลา ไม่อดอาหารหรือใช้วิธีลดน้ำหนักแบบหักโหม",
+            ],
+        },
+        "อ้วน": {
+            "focus": "ปรับพลังงานอย่างเหมาะสมและขอคำแนะนำจากผู้เชี่ยวชาญ",
+            "adjustment": (-400, -300),
+            "foods": [
+                "เน้นผัก โปรตีนไม่ติดมัน และธัญพืชไม่ขัดสีในสัดส่วนที่เหมาะสม",
+                "ลดเครื่องดื่มหวาน ของทอด และอาหารแปรรูป โดยเลือกปรับทีละอย่างให้ทำต่อเนื่องได้",
+                "หลีกเลี่ยงการอดอาหารหรือกำหนดพลังงานต่ำมากโดยไม่มีผู้เชี่ยวชาญดูแล",
+            ],
+        },
+    }.get(category)
+    if guidance is None:
+        return None
+
+    recommendation = {"focus": guidance["focus"], "foods": guidance["foods"], "calorie_min": None, "calorie_max": None}
+    try:
+        age = float(age)
+        weight = float(weight)
+        height = float(height)
+    except (TypeError, ValueError):
+        return recommendation
+    if not all(math.isfinite(value) for value in (age, weight, height)) or age < 18 or weight <= 0 or height <= 0:
+        return recommendation
+
+    activity_factors = {
+        "น้อยกว่า 1 วันต่อสัปดาห์": 1.2,
+        "1–2 วันต่อสัปดาห์": 1.375,
+        "3 วันขึ้นไปต่อสัปดาห์": 1.55,
+    }
+    activity_factor = activity_factors.get(activity, 1.2)
+    bmr_base = 10 * weight + 6.25 * height - 5 * age
+    if gender == "ชาย":
+        maintenance_range = (bmr_base + 5,) * 2
+    elif gender == "หญิง":
+        maintenance_range = (bmr_base - 161,) * 2
+    else:
+        maintenance_range = (bmr_base - 161, bmr_base + 5)
+    maintenance_range = tuple(value * activity_factor for value in maintenance_range)
+    adjustment_min, adjustment_max = guidance["adjustment"]
+    recommendation["calorie_min"] = max(0, round(maintenance_range[0] + adjustment_min))
+    recommendation["calorie_max"] = max(0, round(maintenance_range[1] + adjustment_max))
+    return recommendation
+
+
+def build(query=None):
+    items = storage.load()
+    member_profiles = {
+        item.get("phone"): item
+        for item in items
+        if item.get("type") == "member" and item.get("phone")
+    }
+    members = {phone: profile.get("name", "ไม่ทราบชื่อ") for phone, profile in member_profiles.items()}
+    category_names = (
+        "น้ำหนักน้อยกว่าเกณฑ์",
+        "อยู่ในเกณฑ์ปกติ",
+        "น้ำหนักเกินเกณฑ์",
+        "อ้วน",
+    )
+    records = []
+    calorie_records = []
+    category_counts = {category: 0 for category in category_names}
+
+    for item in items:
+        if item.get("type") != "bmi":
+            continue
+        try:
+            bmi = float(item.get("bmi"))
+        except (TypeError, ValueError):
+            continue
+        if bmi != bmi or bmi in (float("inf"), float("-inf")):
+            continue
+
+        category = item.get("category", "ไม่ระบุ")
+        if category in category_counts:
+            category_counts[category] += 1
+        records.append({
+            "name": members.get(item.get("phone"), "ไม่พบข้อมูลสมาชิก"),
+            "phone": item.get("phone"),
+            "date": item.get("date", "ไม่ระบุ"),
+            "bmi": bmi,
+            "category": category,
+            "weight": item.get("weight", "ไม่ระบุ"),
+            "height": item.get("height", "ไม่ระบุ"),
+            "activity": item.get("activity", ""),
+        })
+
+    for item in items:
+        if item.get("type") != "calorie":
+            continue
+        try:
+            calories = float(item.get("calories"))
+            grams = float(item.get("grams"))
+            target_calories = float(item.get("target_calories"))
+        except (TypeError, ValueError):
+            continue
+        if any(value != value or value in (float("inf"), float("-inf")) for value in (calories, grams, target_calories)):
+            continue
+        calorie_records.append({
+            "name": members.get(item.get("phone"), "ไม่พบข้อมูลสมาชิก"),
+            "phone": item.get("phone"),
+            "date": item.get("date", "ไม่ระบุ"),
+            "food": item.get("food", "ไม่ระบุ"),
+            "grams": grams,
+            "calories": calories,
+            "target_calories": target_calories,
+            "goal_label": item.get("goal_label", "ไม่ระบุ"),
+        })
+
+    records.sort(key=lambda record: record["date"], reverse=True)
+    calorie_records.sort(key=lambda record: record["date"], reverse=True)
+    average_bmi = sum(record["bmi"] for record in records) / len(records) if records else None
+
+    member_summaries = {
+        phone: {
+            "phone": phone,
+            "name": name,
+            "record_count": 0,
+            "bmi_total": 0,
+            "category_counts": {category: 0 for category in category_names},
+            "latest_date": None,
+            "latest_bmi": None,
+            "latest_category": None,
+            "latest_weight": None,
+            "latest_height": None,
+            "latest_activity": "",
+            "calorie_count": 0,
+            "calorie_total": 0,
+            "latest_calorie_date": None,
+            "latest_food": None,
+            "latest_calories": None,
+            "latest_calorie_target": None,
+        }
+        for phone, name in members.items()
+    }
+    for record in records:
+        member_key = record["phone"] or record["name"]
+        summary = member_summaries.setdefault(member_key, {
+            "phone": record["phone"],
+            "name": record["name"],
+            "record_count": 0,
+            "bmi_total": 0,
+            "category_counts": {category: 0 for category in category_names},
+            "latest_date": None,
+            "latest_bmi": None,
+            "latest_category": None,
+            "latest_weight": None,
+            "latest_height": None,
+            "latest_activity": "",
+            "calorie_count": 0,
+            "calorie_total": 0,
+            "latest_calorie_date": None,
+            "latest_food": None,
+            "latest_calories": None,
+            "latest_calorie_target": None,
+        })
+        if summary["latest_date"] is None:
+            summary["latest_date"] = record["date"]
+            summary["latest_bmi"] = record["bmi"]
+            summary["latest_category"] = record["category"]
+            summary["latest_weight"] = record["weight"]
+            summary["latest_height"] = record["height"]
+            summary["latest_activity"] = record["activity"]
+        summary["record_count"] += 1
+        summary["bmi_total"] += record["bmi"]
+        if record["category"] in summary["category_counts"]:
+            summary["category_counts"][record["category"]] += 1
+
+    for record in calorie_records:
+        member_key = record["phone"] or record["name"]
+        summary = member_summaries.setdefault(member_key, {
+            "phone": record["phone"],
+            "name": record["name"],
+            "record_count": 0,
+            "bmi_total": 0,
+            "category_counts": {category: 0 for category in category_names},
+            "latest_date": None,
+            "latest_bmi": None,
+            "latest_category": None,
+            "latest_weight": None,
+            "latest_height": None,
+            "latest_activity": "",
+            "calorie_count": 0,
+            "calorie_total": 0,
+            "latest_calorie_date": None,
+            "latest_food": None,
+            "latest_calories": None,
+            "latest_calorie_target": None,
+        })
+        if summary["latest_calorie_date"] is None:
+            summary["latest_calorie_date"] = record["date"]
+            summary["latest_food"] = record["food"]
+            summary["latest_calories"] = record["calories"]
+            summary["latest_calorie_target"] = record["target_calories"]
+        summary["calorie_count"] += 1
+        summary["calorie_total"] += record["calories"]
+
+    summarized_members = []
+    for summary in sorted(member_summaries.values(), key=lambda entry: entry["name"].casefold()):
+        profile = member_profiles.get(summary["phone"], {})
+        summary["daily_food_advice"] = daily_food_advice(
+            summary["latest_category"],
+            profile.get("age"),
+            profile.get("gender"),
+            summary["latest_weight"],
+            summary["latest_height"],
+            summary["latest_activity"],
+        )
+        summarized_members.append({
+            **summary,
+            "average_bmi": summary["bmi_total"] / summary["record_count"] if summary["record_count"] else None,
+            "average_calories": summary["calorie_total"] / summary["calorie_count"] if summary["calorie_count"] else None,
+        })
+    member_summaries = summarized_members
+
+    selected_phone = (query or {}).get("member", "")
+    selected_member = next((member for member in member_summaries if member["phone"] == selected_phone), None)
+    is_member_page = selected_member is not None
+    visible_records = [record for record in records if record["phone"] == selected_phone] if is_member_page else records
+    visible_calorie_records = [
+        record for record in calorie_records if record["phone"] == selected_phone
+    ] if is_member_page else calorie_records
+    visible_calorie_total = sum(record["calories"] for record in visible_calorie_records)
+    visible_category_counts = selected_member["category_counts"] if is_member_page else category_counts
+    visible_category_summary = [
+        {"name": category, "count": visible_category_counts[category]}
+        for category in category_names
+    ]
+    visible_average_bmi = selected_member["average_bmi"] if is_member_page else average_bmi
+
+    member_daily_values = {}
+    for record in visible_records:
+        try:
+            record_date = date.fromisoformat(record["date"])
+        except (TypeError, ValueError):
+            continue
+        member_key = record["phone"] or record["name"]
+        member_data = member_daily_values.setdefault(member_key, {"name": record["name"], "days": {}})
+        member_data["days"].setdefault(record_date, []).append(record["bmi"])
+
+    palette = ("#7a1f2b", "#26734d", "#2563a6", "#b7791f", "#7c4d8a", "#287c78")
+    bmi_chart_series = []
+    chart_y_ticks = []
+    chart_x_ticks = []
+    if member_daily_values:
+        plot_left, plot_right = 70, 770
+        plot_top, plot_bottom = 28, 250
+        chart_dates = sorted({day for member in member_daily_values.values() for day in member["days"]})
+        bmi_values = [value for member in member_daily_values.values() for values in member["days"].values() for value in values]
+        chart_min = max(0, min(bmi_values) - max(1, (max(bmi_values) - min(bmi_values)) * 0.15))
+        chart_max = max(bmi_values) + max(1, (max(bmi_values) - min(bmi_values)) * 0.15)
+        day_start = chart_dates[0].toordinal()
+        day_end = chart_dates[-1].toordinal()
+
+        for member_index, member in enumerate(sorted(member_daily_values.values(), key=lambda entry: entry["name"].casefold())):
+            points = []
+            for day, values in sorted(member["days"].items()):
+                if day_start == day_end:
+                    x = (plot_left + plot_right) / 2
+                else:
+                    x = plot_left + (day.toordinal() - day_start) / (day_end - day_start) * (plot_right - plot_left)
+                bmi = sum(values) / len(values)
+                y = plot_bottom - (bmi - chart_min) / (chart_max - chart_min) * (plot_bottom - plot_top)
+                points.append({
+                    "x": round(x, 1),
+                    "y": round(y, 1),
+                    "date": day.isoformat(),
+                    "bmi": bmi,
+                })
+            bmi_chart_series.append({
+                "name": member["name"],
+                "color": palette[member_index % len(palette)],
+                "points": points,
+                "line": " ".join(f"{point['x']},{point['y']}" for point in points),
+            })
+
+        for value in (chart_min, (chart_min + chart_max) / 2, chart_max):
+            y = plot_bottom - (value - chart_min) / (chart_max - chart_min) * (plot_bottom - plot_top)
+            chart_y_ticks.append({"value": round(value, 1), "y": round(y, 1)})
+
+        if len(chart_dates) <= 5:
+            tick_indexes = range(len(chart_dates))
+        else:
+            tick_indexes = [round(index * (len(chart_dates) - 1) / 4) for index in range(5)]
+        chart_x_ticks = []
+        for index in tick_indexes:
+            day = chart_dates[index]
+            if day_start == day_end:
+                x = (plot_left + plot_right) / 2
+            else:
+                x = plot_left + (day.toordinal() - day_start) / (day_end - day_start) * (plot_right - plot_left)
+            chart_x_ticks.append({"x": round(x, 1), "label": day.strftime("%d/%m/%y")})
+
+    return {
+        "record_count": len(visible_records),
+        "calorie_record_count": len(visible_calorie_records),
+        "calorie_total": visible_calorie_total,
+        "calorie_average": visible_calorie_total / len(visible_calorie_records) if visible_calorie_records else None,
+        "member_count": len(members),
+        "average_bmi": visible_average_bmi,
+        "category_summary": visible_category_summary,
+        "member_summaries": member_summaries,
+        "selected_member": selected_member,
+        "is_member_page": is_member_page,
+        "bmi_chart_series": bmi_chart_series,
+        "bmi_chart_y_ticks": chart_y_ticks,
+        "bmi_chart_x_ticks": chart_x_ticks,
+        "records": visible_records,
+        "calorie_records": visible_calorie_records,
+    }
